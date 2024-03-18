@@ -35,7 +35,7 @@
 
   const image_dim_info_size_needed = 8;
 
-  const ws_addr = "ws://192.168.2.228:8000";
+  const ws_addr = "ws://localhost:8000";
 
   let videoElem: HTMLVideoElement;
 

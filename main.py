@@ -27,7 +27,23 @@ from typing import Optional, TypeVar, Generic, cast, Any
 from enum import Enum, auto
 from time import time
 
-send_stream, receive_stream = create_memory_object_stream(0, bytes)
+ws_conn = set[WebSocket]()
+
+async def poll_stream(recv: MemoryObjectReceiveStream[bytes]):
+    from loguru import logger
+    logger.info("poll stream")
+    async for message in recv:
+        for ws in ws_conn.copy():
+            try:
+                await ws.send_bytes(message)
+            except Exception as e:
+                logger.error(e)
+                try:
+                    await ws.close()
+                except Exception as e:
+                    logger.error(e)
+                finally:
+                    ws_conn.remove(ws)
 
 
 class BitDepth(Enum):
@@ -123,14 +139,14 @@ async def ws_sender(websocket: WebSocket):
     assert broadcast is not None, "broadcast is not initialized"
     async with broadcast.subscribe(channel=CHANNEL_NAME) as subscriber:
         async for event in subscriber:
-            event = cast(Event[bytes], event)
-            await websocket.send_bytes(event.message)
+            pass
 
 
 # https://anyio.readthedocs.io/en/stable/streams.html
 async def ws_handler(ws: WebSocket):
     try:
         await ws.accept()
+        ws_conn.add(ws)
         await run_until_first_complete((ws_receiver, {
             "websocket": ws
         }), (ws_sender, {
@@ -149,6 +165,7 @@ async def lifespan(_app: Starlette):
         assert broadcast is not None
         assert broadcast is not None
         await broadcast.connect()
+        await tg.spawn(run_video_cap)
         yield
         await broadcast.disconnect()
         await tg.cancel_scope.cancel()
@@ -197,57 +214,60 @@ async def run_video_cap():
     # https://github.com/opencv/opencv/blob/625eebad54a34a7bdad6812f3e9ec050a1b3adc5/modules/videoio/src/cap_gstreamer.cpp#L1342-L1344
     # https://stackoverflow.com/questions/51213730/how-to-get-gstreamer-live-stream-using-opencv-and-python
     from loguru import logger
-    # make sure GStreamer is Yes in Video I/O
-    logger.info(cv2.getBuildInformation())
-    # pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
-    # cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
-    cap = cv.VideoCapture(1, cv.CAP_AVFOUNDATION)
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, EXPECTED_WIDTH)
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, EXPECTED_HEIGHT)
-    cap.set(cv.CAP_PROP_FPS, 30)
-    process_time_sma = SimpleMovingAverage(30)
-    frame_count = 0
-    if not cap.isOpened():
-        logger.error("capture is not opened. Exiting ...")
-        return
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                logger.error("Can't receive frame (stream end?). Exiting ...")
-                break
-            # cv.imshow("frame", frame)
-            start = time()
-            if frame.shape[1] > EXPECTED_WIDTH or frame.shape[
-                    0] > EXPECTED_HEIGHT:
-                frame = cv.resize(frame, (EXPECTED_WIDTH, EXPECTED_HEIGHT))
-            rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-            global broadcast
-            if broadcast is not None:
+    send_stream, receive_stream = create_memory_object_stream(0, bytes)
+    async def run_cap():
+        # pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
+        # cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
+        cap = cv.VideoCapture(1, cv.CAP_AVFOUNDATION)
+        cap.set(cv.CAP_PROP_FRAME_WIDTH, EXPECTED_WIDTH)
+        cap.set(cv.CAP_PROP_FRAME_HEIGHT, EXPECTED_HEIGHT)
+        cap.set(cv.CAP_PROP_FPS, 30)
+        process_time_sma = SimpleMovingAverage(30)
+        frame_count = 0
+        if not cap.isOpened():
+            logger.error("capture is not opened. Exiting ...")
+            return
+        try:
+            while True:
+                ret, frame = await anyio.to_thread.run_sync(cap.read)
+                if not ret:
+                    logger.error(
+                        "Can't receive frame (stream end?). Exiting ...")
+                    break
+                start = time()
+                if frame.shape[1] > EXPECTED_WIDTH or frame.shape[
+                        0] > EXPECTED_HEIGHT:
+                    frame = cv.resize(frame, (EXPECTED_WIDTH, EXPECTED_HEIGHT))
+                rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 info = ImageDimension.from_cv_mat(rgb)
-                await broadcast.publish(CHANNEL_NAME,
-                                        info.marshal() + rgb.tobytes())
+                try:
+                    async with anyio.fail_after(0.1):
+                        await send_stream.send(info.marshal() + rgb.tobytes())
+                        diff = time() - start
+                        process_time_sma.next(diff)
+                except TimeoutError:
+                    pass
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    logger.info(f"process time: {process_time_sma.value}")
 
-                diff = time() - start
-                process_time_sma.next(diff)
-            frame_count += 1
-            if frame_count % 30 == 0:
-                logger.info(f"process time: {process_time_sma.value}")
+        except KeyboardInterrupt:
+            cap.release()
+        except Exception as e:
+            cap.release()
+            logger.error(e)
 
-    except KeyboardInterrupt:
-        cap.release()
-        cv.destroyAllWindows()
-    except Exception as e:
-        cap.release()
-        cv.destroyAllWindows()
-        logger.error(e)
+    # make sure GStreamer is Yes in Video I/O
+    # logger.info(cv2.getBuildInformation())
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(poll_stream, receive_stream)
+        await run_cap()
 
 
 @click.command()
 @click.option("--port", default=8000, help="Port number")
 @click.option("--host", default="0.0.0.0", help="Host")
 def main(port: int, host: str):
-    video_thread = Thread(target=lambda: anyio.run(run_video_cap))
     middleware = [
         Middleware(
             CORSMiddleware,
@@ -265,9 +285,7 @@ def main(port: int, host: str):
                     ],
                     middleware=middleware,
                     lifespan=lifespan)  # type: ignore
-    video_thread.start()
     uvicorn.run(app, host=host, port=port)
-    video_thread.join()
 
 
 if __name__ == "__main__":
