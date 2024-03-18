@@ -37,14 +37,8 @@ async def poll_stream(recv: MemoryObjectReceiveStream[bytes]):
         for ws in ws_conn.copy():
             try:
                 await ws.send_bytes(message)
-            except Exception as e:
-                logger.error(e)
-                try:
-                    await ws.close()
-                except Exception as e:
-                    logger.error(e)
-                finally:
-                    ws_conn.remove(ws)
+            except WebSocketDisconnect:
+                ws_conn.remove(ws)
 
 
 class BitDepth(Enum):
