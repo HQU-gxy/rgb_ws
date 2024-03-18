@@ -12,7 +12,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_until_first_complete, run_in_threadpool
-from broadcaster import Broadcast
+from starlette.websockets import WebSocketDisconnect
 import orjson as json
 import anyio
 from anyio import create_memory_object_stream
@@ -28,6 +28,7 @@ from enum import Enum, auto
 from time import time
 
 ws_conn = set[WebSocket]()
+
 
 async def poll_stream(recv: MemoryObjectReceiveStream[bytes]):
     from loguru import logger
@@ -117,29 +118,7 @@ class ImageDimension(BaseModel):
 CHANNEL_NAME = "video"
 T = TypeVar("T")
 
-
-class Event(Generic[T]):
-    """
-    Just for type annotation; see also broadcaster.Event
-    """
-    channel: str
-    message: T
-
-
-broadcast: Optional[Broadcast] = None
 logger = logging.getLogger('uvicorn')
-
-
-async def ws_receiver(websocket: WebSocket):
-    async for _message in websocket.iter_text():
-        pass
-
-
-async def ws_sender(websocket: WebSocket):
-    assert broadcast is not None, "broadcast is not initialized"
-    async with broadcast.subscribe(channel=CHANNEL_NAME) as subscriber:
-        async for event in subscriber:
-            pass
 
 
 # https://anyio.readthedocs.io/en/stable/streams.html
@@ -147,27 +126,20 @@ async def ws_handler(ws: WebSocket):
     try:
         await ws.accept()
         ws_conn.add(ws)
-        await run_until_first_complete((ws_receiver, {
-            "websocket": ws
-        }), (ws_sender, {
-            "websocket": ws
-        }))
-    except Exception as e:
-        logger.error(e)
+        async for message in ws.iter_bytes():
+            pass
+    except WebSocketDisconnect:
+        logger.warning("websocket {} disconnected".format(ws.client))
+    finally:
+        ws_conn.remove(ws)
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: Starlette):
-    global broadcast
     logger.info("lifespan starts")
     async with anyio.create_task_group() as tg:
-        broadcast = Broadcast("memory://")
-        assert broadcast is not None
-        assert broadcast is not None
-        await broadcast.connect()
         await tg.spawn(run_video_cap)
         yield
-        await broadcast.disconnect()
         await tg.cancel_scope.cancel()
     logger.info("lifespan end")
 
@@ -215,6 +187,7 @@ async def run_video_cap():
     # https://stackoverflow.com/questions/51213730/how-to-get-gstreamer-live-stream-using-opencv-and-python
     from loguru import logger
     send_stream, receive_stream = create_memory_object_stream(0, bytes)
+
     async def run_cap():
         # pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
         # cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
