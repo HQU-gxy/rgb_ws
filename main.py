@@ -13,6 +13,7 @@ from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_until_first_complete, run_in_threadpool
 from starlette.websockets import WebSocketDisconnect
+from websockets.exceptions import ConnectionClosedOK
 import orjson as json
 import anyio
 from anyio import create_memory_object_stream
@@ -39,6 +40,10 @@ async def poll_stream(recv: MemoryObjectReceiveStream[bytes]):
                 await ws.send_bytes(message)
             except WebSocketDisconnect:
                 ws_conn.remove(ws)
+            except ConnectionClosedOK:
+                ws_conn.remove(ws)
+            except Exception as e:
+                logger.error(e)
 
 
 class BitDepth(Enum):

@@ -5,6 +5,8 @@ import type {
   Input as WorkerInput,
 } from "./worker/process"
 import type { ImageDimensions } from "./models/image"
+// https://vitejs.dev/guide/assets#importing-script-as-a-worker
+import ProcessWorker from "./worker/process?worker"
 
 let video_dim: ImageDimensions | undefined
 
@@ -24,15 +26,12 @@ onMount(() => {
   // https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/captureStream
   // https://developer.chrome.com/blog/capture-stream
   const stream = canvas.captureStream()
-  const worker = new Worker(new URL("./worker/process.ts", import.meta.url))
-  const to_workder = (data: WorkerInput) => {
-    worker.postMessage(data, [data])
-  }
+  const worker = new ProcessWorker()
   videoElem.srcObject = stream
   conn.onmessage = (e) => {
     const data = e.data
     if (data instanceof ArrayBuffer) {
-      to_workder(data)
+      worker.postMessage(data, [data])
     }
   }
   worker.onmessage = (e: MessageEvent<WorkerOutput>) => {
@@ -41,6 +40,7 @@ onMount(() => {
       canvas.width = dims.width
       canvas.height = dims.height
     }
+    video_dim = dims
     ctx?.putImageData(img, 0, 0)
   }
   return () => {
