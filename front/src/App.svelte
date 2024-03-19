@@ -1,6 +1,9 @@
 <script lang="ts">
 import { onMount } from "svelte"
-import { unmarshal_image_dim_info, SIZE_NEEDED } from "./models/image"
+import type {
+  Output as WorkerOutput,
+  Input as WorkerInput,
+} from "./worker/process"
 import type { ImageDimensions } from "./models/image"
 
 let video_dim: ImageDimensions | undefined
@@ -21,37 +24,28 @@ onMount(() => {
   // https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/captureStream
   // https://developer.chrome.com/blog/capture-stream
   const stream = canvas.captureStream()
+  const worker = new Worker(new URL("./worker/process.ts", import.meta.url))
+  const to_workder = (data: WorkerInput) => {
+    worker.postMessage(data, [data])
+  }
   videoElem.srcObject = stream
   conn.onmessage = (e) => {
     const data = e.data
     if (data instanceof ArrayBuffer) {
-      const dim_info = unmarshal_image_dim_info(data.slice(0, SIZE_NEEDED))
-      if (
-        canvas.width !== dim_info.width ||
-        canvas.height !== dim_info.height
-      ) {
-        canvas.width = dim_info.width
-        canvas.height = dim_info.height
-      }
-      video_dim = dim_info
-      const img_data = new Uint8ClampedArray(data.slice(SIZE_NEEDED))
-      // https://developer.mozilla.org/en-US/docs/Web/API/ImageData
-      const img = ctx?.createImageData(dim_info.width, dim_info.height)
-      if (img) {
-        for (let i = 0, j = 0; i < img_data.length; i += 3, j += 4) {
-          img.data[j] = img_data[i]
-          img.data[j + 1] = img_data[i + 1]
-          img.data[j + 2] = img_data[i + 2]
-          // image data is always 4 bytes per pixel (the last byte is alpha channel, set to 255 for opaque image)
-          img.data[j + 3] = 255
-        }
-        // https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/putImageData
-        ctx?.putImageData(img, 0, 0)
-      }
+      to_workder(data)
     }
+  }
+  worker.onmessage = (e: MessageEvent<WorkerOutput>) => {
+    const [img, dims] = e.data
+    if (canvas.width !== dims.width || canvas.height !== dims.height) {
+      canvas.width = dims.width
+      canvas.height = dims.height
+    }
+    ctx?.putImageData(img, 0, 0)
   }
   return () => {
     conn.close()
+    worker.terminate()
   }
 })
 </script>
