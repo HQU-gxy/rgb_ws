@@ -183,9 +183,9 @@ async def run_video_cap():
     send_stream, receive_stream = create_memory_object_stream(0, bytes)
 
     async def run_cap():
-        # pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
-        # cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
-        cap = cv.VideoCapture(1, cv.CAP_AVFOUNDATION)
+        pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
+        cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
+        # cap = cv.VideoCapture(1, cv.CAP_AVFOUNDATION)
         cap.set(cv.CAP_PROP_FRAME_WIDTH, EXPECTED_WIDTH)
         cap.set(cv.CAP_PROP_FRAME_HEIGHT, EXPECTED_HEIGHT)
         cap.set(cv.CAP_PROP_FPS, 30)
