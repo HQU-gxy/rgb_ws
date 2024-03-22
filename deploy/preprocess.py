@@ -15,7 +15,7 @@
 import cv2
 import numpy as np
 import imgaug.augmenters as iaa
-from keypoint_preprocess import get_affine_transform
+from .keypoint_preprocess import get_affine_transform
 from PIL import Image
 
 

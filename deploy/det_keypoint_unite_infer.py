@@ -28,6 +28,7 @@ from visualize import visualize_pose
 from benchmark_utils import PaddleInferBenchmark
 from utils import get_current_memory_mb
 from keypoint_postprocess import translate_to_ori_images
+from cv2.typing import MatLike
 
 KEYPOINT_SUPPORT_MODELS = {
     'HigherHRNet': 'keypoint_bottomup',
@@ -61,9 +62,9 @@ def predict_with_given_det(image, det_res, keypoint_detector,
     return keypoint_res
 
 
-def topdown_unite_predict(detector,
-                          topdown_keypoint_detector,
-                          image_list,
+def topdown_unite_predict(detector: Detector,
+                          topdown_keypoint_detector:KeyPointDetector,
+                          image_list: list[MatLike],
                           keypoint_batch_size=1,
                           save_res=False):
     det_timer = detector.get_timer()
