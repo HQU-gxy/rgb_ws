@@ -16,6 +16,8 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import ConnectionClosedOK
 import orjson as json
 import anyio
+from anyio import TASK_STATUS_IGNORED
+from anyio import to_thread
 from anyio import create_memory_object_stream
 from anyio.streams.memory import MemoryObjectReceiveStream
 from pydantic import BaseModel
@@ -137,9 +139,13 @@ async def ws_handler(ws: WebSocket):
 async def lifespan(_app: Starlette):
     logger.info("lifespan starts")
     async with anyio.create_task_group() as tg:
-        await tg.spawn(run_video_cap)
+        # https://anyio.readthedocs.io/en/latest/threads.html#spawning-tasks-from-worker-threads
+        def with_status(task_status=TASK_STATUS_IGNORED):
+            return run_video_cap()
+
+        tg.start_soon(run_video_cap)
         yield
-        await tg.cancel_scope.cancel()
+        tg.cancel_scope.cancel()
     logger.info("lifespan end")
 
 
@@ -180,12 +186,13 @@ class SimpleMovingAverage:
         self._value = None
 
 
+# https://anyio.readthedocs.io/en/latest/threads.html#spawning-tasks-from-worker-threads
 async def run_video_cap():
     # use GStreamer to get a video stream from the test video
     # https://github.com/opencv/opencv/blob/625eebad54a34a7bdad6812f3e9ec050a1b3adc5/modules/videoio/src/cap_gstreamer.cpp#L1342-L1344
     # https://stackoverflow.com/questions/51213730/how-to-get-gstreamer-live-stream-using-opencv-and-python
     from loguru import logger
-    send_stream, receive_stream = create_memory_object_stream(0, bytes)
+    send_stream, receive_stream = create_memory_object_stream[bytes](0)
 
     async def run_cap():
         pipeline = "videotestsrc is-live=true ! timeoverlay ! videoconvert ! appsink name=opencvsink"
@@ -201,7 +208,7 @@ async def run_video_cap():
             return
         try:
             while True:
-                ret, frame = await anyio.to_thread.run_sync(cap.read)
+                ret, frame = await to_thread.run_sync(cap.read)
                 if not ret:
                     logger.error(
                         "Can't receive frame (stream end?). Exiting ...")
@@ -212,13 +219,10 @@ async def run_video_cap():
                     frame = cv.resize(frame, (EXPECTED_WIDTH, EXPECTED_HEIGHT))
                 rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 info = ImageDimension.from_cv_mat(rgb)
-                try:
-                    async with anyio.fail_after(0.1):
-                        await send_stream.send(info.marshal() + rgb.tobytes())
-                        diff = time() - start
-                        process_time_sma.next(diff)
-                except TimeoutError:
-                    pass
+                with anyio.move_on_after(0.1):
+                    await send_stream.send(info.marshal() + rgb.tobytes())
+                    diff = time() - start
+                    process_time_sma.next(diff)
                 frame_count += 1
                 if frame_count % 30 == 0:
                     logger.info(f"process time: {process_time_sma.value}")
@@ -240,6 +244,11 @@ async def run_video_cap():
 @click.option("--port", default=8000, help="Port number")
 @click.option("--host", default="0.0.0.0", help="Host")
 def main(port: int, host: str):
+    from importlib.metadata import version
+    anyio_version_str = version("anyio").split(".")
+    anyio_version = tuple([int(x) for x in anyio_version_str])
+    assert anyio_version[0] >= 4 and anyio_version[
+        1] >= 3, "anyio version must be >= 4.3"
     middleware = [
         Middleware(
             CORSMiddleware,
